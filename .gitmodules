@@ -1,0 +1,6 @@
+[submodule "hifi-gan"]
+	path = third_party/hifi-gan
+	url = https://github.com/ljuvela/hifi-gan.git
+[submodule "asvspoof-2021"]
+	path = third_party/asvspoof-2021
+	url = https://github.com/ljuvela/asvspoof-2021.git
