@@ -1,0 +1,10 @@
+{
+    "python.analysis.extraPaths": [
+        "third_party/hifi-gan",
+        "third_party/asvspoof-2021/LA/Baseline-LFCC-LCNN"
+    ],
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.autopep8"
+    },
+    "python.formatting.provider": "none"
+}
