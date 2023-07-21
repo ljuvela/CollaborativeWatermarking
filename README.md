@@ -9,7 +9,7 @@ Create Conda environment
 conda create -n adversarial-watermarking python=3.10
 conda activate adversarial-watermarking
 
-conda install -c pytorch -c conda-forge pytorch torchaudio pytest conda-build matplotlib scipy pysoundfile 
+conda install -c pytorch -c conda-forge pytorch torchaudio pytest conda-build matplotlib scipy pysoundfile tensorboard
 
 
 

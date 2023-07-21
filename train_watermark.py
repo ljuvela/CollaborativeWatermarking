@@ -19,8 +19,7 @@ from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator,
 from metrics import DiscriminatorMetrics
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
 
-from wrappers.models import LFCC_LCNN
-
+from wrappers.watermark import WatermarkModelEnsemble
 
 torch.backends.cudnn.benchmark = True
 
@@ -42,13 +41,10 @@ def train(rank, a, h):
     mpd = MultiPeriodDiscriminator().to(device)
     msd = MultiScaleDiscriminator().to(device)
 
-    mpd_watermark = MultiPeriodDiscriminator().to(device)
-    msd_watermark = MultiScaleDiscriminator().to(device)
-
-    mpd_adversary_metrics = DiscriminatorMetrics()
-    msd_adversary_metrics = DiscriminatorMetrics()
-    mpd_collab_metrics = DiscriminatorMetrics()
-    msd_collab_metrics = DiscriminatorMetrics()
+    watermark = WatermarkModelEnsemble(
+        model_type=h.watermark_model,
+        sample_rate=h.sampling_rate
+        ).to(device)
 
     if rank == 0:
         print(generator)
@@ -58,7 +54,7 @@ def train(rank, a, h):
     if os.path.isdir(a.checkpoint_path):
         cp_g = scan_checkpoint(a.checkpoint_path, 'g_')
         cp_do = scan_checkpoint(a.checkpoint_path, 'do_')
-        cp_do_wm = scan_checkpoint(a.checkpoint_path, 'do_wm_') 
+        cp_wm = scan_checkpoint(a.checkpoint_path, 'wm_')
 
     steps = 0
     if cp_g is None or cp_do is None:
@@ -73,39 +69,37 @@ def train(rank, a, h):
         steps = state_dict_do['steps'] + 1
         last_epoch = state_dict_do['epoch']
 
-    if cp_do_wm is None:
-        state_dict_do_wm = None
+    if cp_wm is None:
+        state_dict_wm = None
     else:
-        state_dict_do_wm = load_checkpoint(cp_do_wm, device)
-        mpd_watermark.load_state_dict(state_dict_do_wm['mpd'])
-        msd_watermark.load_state_dict(state_dict_do_wm['msd'])
+        state_dict_wm = load_checkpoint(cp_wm, device)
+        watermark.load_state_dict(state_dict_wm['watermark'])
 
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank]).to(device)
         mpd = DistributedDataParallel(mpd, device_ids=[rank]).to(device)
         msd = DistributedDataParallel(msd, device_ids=[rank]).to(device)
-        mpd_watermark = DistributedDataParallel(mpd_watermark, device_ids=[rank]).to(device)
-        msd_watermark = DistributedDataParallel(msd_watermark, device_ids=[rank]).to(device)
+        watermark = DistributedDataParallel(watermark, device_ids=[rank]).to(device)
 
     optim_g = torch.optim.AdamW(generator.parameters(), h.learning_rate, betas=[h.adam_b1, h.adam_b2])
     optim_d = torch.optim.AdamW(itertools.chain(msd.parameters(), mpd.parameters()),
                                 h.learning_rate, betas=[h.adam_b1, h.adam_b2])
-    optim_d_wm = torch.optim.AdamW(itertools.chain(msd_watermark.parameters(), mpd_watermark.parameters()), 
-                                h.learning_rate, betas=[h.adam_b1, h.adam_b2]) # TODO: lump with generator?
+    optim_wm = torch.optim.AdamW(watermark.parameters(), 
+                                h.learning_rate, betas=[h.adam_b1, h.adam_b2])
 
     if state_dict_do is not None:
         optim_g.load_state_dict(state_dict_do['optim_g'])
         optim_d.load_state_dict(state_dict_do['optim_d'])
 
-    if state_dict_do_wm is not None:
-        optim_d_wm.load_state_dict(state_dict_do_wm['optim_d'])
+    if state_dict_wm is not None:
+        optim_wm.load_state_dict(state_dict_wm['optim_wm'])
     elif last_epoch > -1:
-        for pg in optim_d_wm.param_groups:
+        for pg in optim_wm.param_groups:
             pg['initial_lr'] = pg['lr']
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-    scheduler_d_wm = torch.optim.lr_scheduler.ExponentialLR(optim_d_wm, gamma=h.lr_decay, last_epoch=last_epoch)
+    scheduler_wm = torch.optim.lr_scheduler.ExponentialLR(optim_wm, gamma=h.lr_decay, last_epoch=last_epoch)
 
     training_filelist, validation_filelist = get_dataset_filelist(a)
 
@@ -139,8 +133,8 @@ def train(rank, a, h):
     generator.train()
     mpd.train()
     msd.train()
-    mpd_watermark.train()
-    msd_watermark.train()
+    watermark.train() # TODO: disable dropout when training?
+
 
     # generator = torch.compile(generator)
     # mpd = torch.compile(mpd)
@@ -173,7 +167,6 @@ def train(rank, a, h):
                                           h.fmin, h.fmax_for_loss)
 
             optim_d.zero_grad()
-            optim_d_wm.zero_grad()
 
             # MPD
             y_df_hat_r, y_df_hat_g, _, _ = mpd(y, y_g_hat.detach())
@@ -185,23 +178,9 @@ def train(rank, a, h):
             loss_disc_all.backward()
             optim_d.step()
 
-            # # MPD Watermark
-            # y_df_hat_wm_r, y_df_hat_wm_g, _, _ = mpd_watermark(y, y_g_hat.detach())
-            # loss_disc_f_wm, losses_disc_f_wm_r, losses_disc_f_wm_g = discriminator_loss(
-            #     real=y_df_hat_r, generated = y_df_hat_g)
-            # # MSD Watermark
-            # y_ds_hat_wm_r, y_ds_hat_wm_g, _, _ = msd_watermark(y, y_g_hat.detach())
-            # loss_disc_s_wm, losses_disc_s_wm_r, losses_disc_s_wm_g = discriminator_loss(
-            #     real=y_ds_hat_r, generated=y_ds_hat_g)
-            # # Aggregate losses and apply optimization step
-            # loss_disc_wm_all = loss_disc_s_wm + loss_disc_f_wm
-            # loss_disc_wm_all.backward()
-            # optim_d_wm.step()
-
-
             # Generator
             optim_g.zero_grad()
-            optim_d_wm.zero_grad()
+            optim_wm.zero_grad()
 
             # L1 Mel-Spectrogram Loss
             loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
@@ -214,20 +193,32 @@ def train(rank, a, h):
             loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
+            y_wm_real, y_wm_fake = watermark(y, y_g_hat)
+            loss_wm_total = 0.0
+            wm_losses_r = []
+            wm_losses_f = []
+            for y_wm_real_i, y_wm_fake_i in zip(y_wm_real, y_wm_fake):
+                wm_loss, wm_loss_r, wm_loss_f = discriminator_loss(
+                    disc_real_outputs=y_wm_real_i, disc_generated_outputs=y_wm_fake_i)
+                loss_wm_total += wm_loss
+                wm_losses_f.append(wm_loss_r)
+                wm_losses_r.append(wm_loss_f)
+
             # Collaborator (watermark), Generator is aligned with Discriminator
-            y_df_hat_wm_r, y_df_hat_wm_g, _, _ = mpd_watermark(y, y_g_hat)
-            loss_disc_f_wm, losses_disc_f_wm_r, losses_disc_f_wm_g = discriminator_loss(
-                disc_real_outputs=y_df_hat_wm_r, disc_generated_outputs=y_df_hat_wm_g)
-            y_ds_hat_wm_r, y_ds_hat_wm_g, _, _ = msd_watermark(y, y_g_hat)
-            loss_disc_s_wm, losses_disc_s_wm_r, losses_disc_s_wm_g = discriminator_loss(
-                disc_real_outputs=y_ds_hat_wm_r, disc_generated_outputs=y_ds_hat_wm_g)
+            # y_df_hat_wm_r, y_df_hat_wm_g, _, _ = mpd_watermark(y, y_g_hat)
+            # loss_disc_f_wm, losses_disc_f_wm_r, losses_disc_f_wm_g = discriminator_loss(
+            #     disc_real_outputs=y_df_hat_wm_r, disc_generated_outputs=y_df_hat_wm_g)
+            # y_ds_hat_wm_r, y_ds_hat_wm_g, _, _ = msd_watermark(y, y_g_hat)
+            # loss_disc_s_wm, losses_disc_s_wm_r, losses_disc_s_wm_g = discriminator_loss(
+            #     disc_real_outputs=y_ds_hat_wm_r, disc_generated_outputs=y_ds_hat_wm_g)
 
             # Adversarial (S, F), Feature matching (S, F), Mel, Collaborative
-            loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + loss_disc_f_wm + loss_disc_s_wm
+            loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + loss_wm_total
+
 
             loss_gen_all.backward()
             optim_g.step()
-            optim_d_wm.step()
+            optim_wm.step()
 
             if rank == 0:
                 # STDOUT logging
@@ -251,13 +242,11 @@ def train(rank, a, h):
                                                          else msd).state_dict(),
                                      'optim_g': optim_g.state_dict(), 'optim_d': optim_d.state_dict(), 'steps': steps,
                                      'epoch': epoch})
-                    checkpoint_path = "{}/do_wm_{:08d}".format(a.checkpoint_path, steps)
+                    checkpoint_path = "{}/wm_{:08d}".format(a.checkpoint_path, steps)
                     save_checkpoint(checkpoint_path, 
-                                    {'mpd': (mpd_watermark.module if h.num_gpus > 1
-                                                         else mpd_watermark).state_dict(),
-                                     'msd': (msd_watermark.module if h.num_gpus > 1
-                                                         else msd_watermark).state_dict(),
-                                     'optim_d': optim_d_wm.state_dict()
+                                    {'watermark': (watermark.module if h.num_gpus > 1
+                                                         else watermark).state_dict(),
+                                     'optim_wm': optim_wm.state_dict()
                                      })
 
 
@@ -280,28 +269,24 @@ def train(rank, a, h):
                     sw.add_scalar("training_gan/loss_fm_s", loss_fm_s, steps)
 
                     # WATERMARK LOSSES
-                    # Framed Discriminator losses
-                    sw.add_scalar("training_watermark/disc_f_r", sum(losses_disc_f_wm_r), steps)
-                    sw.add_scalar("training_watermark/disc_f_g", sum(losses_disc_f_wm_g), steps)
-                    # Multiscale Discriminator losses
-                    sw.add_scalar("training_watermark/disc_s_r", sum(losses_disc_s_wm_r), steps)
-                    sw.add_scalar("training_watermark/disc_s_g", sum(losses_disc_s_wm_g), steps)
+                    for label, losses in zip(watermark.get_labels(), wm_losses_r):
+                        sw.add_scalar(f"training_watermark/{label}_real", sum(losses), steps)
+                    for label, losses in zip(watermark.get_labels(), wm_losses_f):
+                        sw.add_scalar(f"training_watermark/{label}_fake", sum(losses), steps)
 
                 # Validation
                 if steps % a.validation_interval == 0:  # and steps != 0:
                     generator.eval()
                     mpd.eval()
                     msd.eval()
-                    mpd_watermark.eval()
-                    msd_watermark.eval()
+                    watermark.eval()
                     torch.cuda.empty_cache()
                     val_err_tot = 0
 
                     # Validation set metrics
                     mpd_adversary_metrics = DiscriminatorMetrics()
                     msd_adversary_metrics = DiscriminatorMetrics()
-                    mpd_collab_metrics = DiscriminatorMetrics()
-                    msd_collab_metrics = DiscriminatorMetrics()
+                    watermark_metrics = [DiscriminatorMetrics() for i in range(watermark.get_num_models())]
   
                     with torch.no_grad():
                         for j, batch in enumerate(validation_loader):
@@ -315,9 +300,17 @@ def train(rank, a, h):
                             val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
 
 
-                            # TODO: calculate discriminator EER
+                            # calculate discriminator EER
                             y = torch.autograd.Variable(y.to(device, non_blocking=True))
                             y = y.unsqueeze(1)
+
+                            y_wm_real, y_wm_fake = watermark(y, y_g_hat)
+                            for metrics, y_wm_real_i, y_wm_fake_i in zip(watermark_metrics, y_wm_real, y_wm_fake):
+                                metrics.accumulate(
+                                    disc_real_outputs = y_wm_real_i,
+                                    disc_fake_outputs = y_wm_fake_i
+                                )
+
 
                             y_df_hat_r, y_df_hat_g, _, _ = mpd(y, y_g_hat)
                             mpd_adversary_metrics.accumulate(
@@ -325,21 +318,8 @@ def train(rank, a, h):
                                 disc_fake_outputs = y_df_hat_g
                             )
 
-
                             y_ds_hat_r, y_ds_hat_g, _, _ = msd(y, y_g_hat)
                             msd_adversary_metrics.accumulate(
-                                disc_real_outputs = y_ds_hat_r,
-                                disc_fake_outputs = y_ds_hat_g
-                            )
-
-                            y_df_hat_r, y_df_hat_g, _, _ = mpd_watermark(y, y_g_hat)
-                            mpd_collab_metrics.accumulate(
-                                disc_real_outputs = y_df_hat_r,
-                                disc_fake_outputs = y_df_hat_g
-                            )
-
-                            y_ds_hat_r, y_ds_hat_g, _, _ = msd_watermark(y, y_g_hat)
-                            msd_collab_metrics.accumulate(
                                 disc_real_outputs = y_ds_hat_r,
                                 disc_fake_outputs = y_ds_hat_g
                             )
@@ -356,30 +336,26 @@ def train(rank, a, h):
                                 sw.add_figure('generated/y_hat_spec_{}'.format(j),
                                               plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
 
+
                         val_err = val_err_tot / (j+1)
                         sw.add_scalar("validation/mel_spec_error", val_err, steps)
 
-                        sw.add_scalar("validation/mpd_adversary_accuracy", mpd_adversary_metrics.accuracy, steps)
-                        sw.add_scalar("validation/msd_adversary_accuracy", msd_adversary_metrics.accuracy, steps)
-                        sw.add_scalar("validation/mpd_collab_accuracy", mpd_collab_metrics.accuracy, steps)
-                        sw.add_scalar("validation/msd_collab_accuracy", msd_collab_metrics.accuracy, steps)
+                        for label, metric in zip(watermark.get_labels(), watermark_metrics):
+                            sw.add_scalar(f"validation/watermark_{label}_equal_error_rate", metric.eer, steps)
 
                         sw.add_scalar("validation/mpd_adversary_equal_error_rate", mpd_adversary_metrics.eer, steps)
                         sw.add_scalar("validation/msd_adversary_equal_error_rate", msd_adversary_metrics.eer, steps)
-                        sw.add_scalar("validation/mpd_collab_equal_error_rate", mpd_collab_metrics.eer, steps)
-                        sw.add_scalar("validation/msd_collab_equal_error_rate", msd_collab_metrics.eer, steps)
-
 
                     generator.train()
                     mpd.train()
                     msd.train()
-                    mpd_watermark.train()
-                    msd_watermark.train()
+                    watermark.train()
 
             steps += 1
 
         scheduler_g.step()
         scheduler_d.step()
+        scheduler_wm.step()
         
         if rank == 0:
             print('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
@@ -396,6 +372,7 @@ def main():
     parser.add_argument('--input_training_file', default='LJSpeech-1.1/training.txt')
     parser.add_argument('--input_validation_file', default='LJSpeech-1.1/validation.txt')
     parser.add_argument('--checkpoint_path', default='cp_hifigan')
+    parser.add_argument('--pretrained_watermark_path', default=None)
     parser.add_argument('--config', default='')
     parser.add_argument('--training_epochs', default=3100, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)

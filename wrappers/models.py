@@ -2,6 +2,8 @@ import os
 import sys
 import torch
 
+from torchaudio.transforms import Resample
+
 import importlib.util
 from types import SimpleNamespace
 
@@ -20,7 +22,7 @@ lfcc = import_module_from_file(
 
 class LFCC_LCNN(lfcc.Model):
 
-    def __init__(self, in_dim=1, out_dim=1):
+    def __init__(self, in_dim, out_dim, sample_rate):
         """
         Args: 
             in_dim: input dimension, default 1 for single channel wav
@@ -35,19 +37,35 @@ class LFCC_LCNN(lfcc.Model):
             in_dim, out_dim,
             args=args, prj_conf=prj_conf,
             mean_std=mean_std)
+        
+        self.sample_rate = sample_rate
+        if self.sample_rate != 16000:
+            self.resampler = Resample(orig_freq=self.sample_rate, new_freq=16000)
+        else:
+            self.resampler = None
 
     def forward(self, x):
         """
         Args:
-            x: (batch, length)
+            x: (batch, channels=1, length)
 
         Returns:
-            scores: (batch,)
+            scores: (batch, length=1)
 
         """
-        feature_vec = self._compute_embedding(x, datalength=None)
+
+        if x.ndim != 3:
+            raise ValueError(f"Expected input of shape (batch, channels=1, timestesps), got {x.shape}")
+        if x.size(1) != 1:
+            raise ValueError(f"Expected single channel input, got {x.shape}")
+
+        if self.resampler is not None:
+            x = self.resampler(x)
+
+        feature_vec = self._compute_embedding(x[:, 0, :], datalength=None)
         # return feature_vec
         scores = self._compute_score(feature_vec)
+        scores = scores.reshape(-1, 1)
         return scores
     
 

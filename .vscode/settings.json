@@ -4,7 +4,7 @@
         "third_party/asvspoof-2021/LA/Baseline-LFCC-LCNN"
     ],
     "[python]": {
-        "editor.defaultFormatter": "ms-python.autopep8"
+        "editor.defaultFormatter": "ms-python.python"
     },
     "python.formatting.provider": "none"
 }
