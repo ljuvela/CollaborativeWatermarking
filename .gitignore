@@ -1,0 +1,5 @@
+scripts/*
+cp_hifigan/*
+ckpt/*
+experiments/*
+*.pyc
