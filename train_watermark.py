@@ -43,7 +43,8 @@ def train(rank, a, h):
 
     watermark = WatermarkModelEnsemble(
         model_type=h.watermark_model,
-        sample_rate=h.sampling_rate
+        sample_rate=h.sampling_rate,
+        config=h
         ).to(device)
 
     if rank == 0:
@@ -80,6 +81,17 @@ def train(rank, a, h):
         mpd = DistributedDataParallel(mpd, device_ids=[rank]).to(device)
         msd = DistributedDataParallel(msd, device_ids=[rank]).to(device)
         watermark = DistributedDataParallel(watermark, device_ids=[rank]).to(device)
+
+    if a.pretrained_watermark_path is not None:
+        state_dict = torch.load(a.pretrained_watermark_path)
+        watermark.load_pretrained_state_dict(state_dict)
+
+    if a.freeze_watermark_weights:
+        for param in watermark.parameters():
+            param.requires_grad_(False)
+        # unfreeze output layer
+        # watermark.output_layer_requires_grad_(True)
+        # watermark.eval()
 
     optim_g = torch.optim.AdamW(generator.parameters(), h.learning_rate, betas=[h.adam_b1, h.adam_b2])
     optim_d = torch.optim.AdamW(itertools.chain(msd.parameters(), mpd.parameters()),
@@ -204,17 +216,8 @@ def train(rank, a, h):
                 wm_losses_f.append(wm_loss_r)
                 wm_losses_r.append(wm_loss_f)
 
-            # Collaborator (watermark), Generator is aligned with Discriminator
-            # y_df_hat_wm_r, y_df_hat_wm_g, _, _ = mpd_watermark(y, y_g_hat)
-            # loss_disc_f_wm, losses_disc_f_wm_r, losses_disc_f_wm_g = discriminator_loss(
-            #     disc_real_outputs=y_df_hat_wm_r, disc_generated_outputs=y_df_hat_wm_g)
-            # y_ds_hat_wm_r, y_ds_hat_wm_g, _, _ = msd_watermark(y, y_g_hat)
-            # loss_disc_s_wm, losses_disc_s_wm_r, losses_disc_s_wm_g = discriminator_loss(
-            #     disc_real_outputs=y_ds_hat_wm_r, disc_generated_outputs=y_ds_hat_wm_g)
-
             # Adversarial (S, F), Feature matching (S, F), Mel, Collaborative
             loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + loss_wm_total
-
 
             loss_gen_all.backward()
             optim_g.step()
@@ -273,6 +276,8 @@ def train(rank, a, h):
                         sw.add_scalar(f"training_watermark/{label}_real", sum(losses), steps)
                     for label, losses in zip(watermark.get_labels(), wm_losses_f):
                         sw.add_scalar(f"training_watermark/{label}_fake", sum(losses), steps)
+
+                    # TODO: log minibatch EER
 
                 # Validation
                 if steps % a.validation_interval == 0:  # and steps != 0:
@@ -373,6 +378,7 @@ def main():
     parser.add_argument('--input_validation_file', default='LJSpeech-1.1/validation.txt')
     parser.add_argument('--checkpoint_path', default='cp_hifigan')
     parser.add_argument('--pretrained_watermark_path', default=None)
+    parser.add_argument('--freeze_watermark_weights', default=False, type=bool)
     parser.add_argument('--config', default='')
     parser.add_argument('--training_epochs', default=3100, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)

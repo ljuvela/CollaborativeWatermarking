@@ -2,14 +2,15 @@ import torch
 
 from models import MultiPeriodDiscriminator, MultiScaleDiscriminator
 
-from .models import LFCC_LCNN
+from .models import LFCC_LCNN, RawNet
 
 class WatermarkModelEnsemble(torch.nn.Module):
 
-    def __init__(self, model_type:str, sample_rate:int):
+    def __init__(self, model_type:str, sample_rate:int, config):
         super().__init__()
 
         self.models = torch.nn.ModuleDict()
+        self.model_type = model_type
 
         if model_type == "hifi_gan":
             self.models['mpd'] = MultiPeriodDiscriminator()
@@ -17,7 +18,11 @@ class WatermarkModelEnsemble(torch.nn.Module):
         elif model_type == "lfcc_lcnn":
             self.models['lfcc_lcnn'] = LFCC_LCNN(
                 in_dim=1, out_dim=1, 
-                sample_rate=sample_rate)
+                sample_rate=sample_rate, 
+                sigmoid_output=config.get('lfcc_lcnn_sigmoid_out', True),
+                dropout_prob=config.get('lfcc_lcnn_dropout_prob', 0.7))
+        elif model_type == 'raw_net':
+            self.models['raw_net'] = RawNet(sample_rate=sample_rate)
         elif model_type is None:
             pass
         else:
@@ -49,4 +54,32 @@ class WatermarkModelEnsemble(torch.nn.Module):
     
     def get_num_models(self):
         return len(self.models.keys())
+
+
+    def load_pretrained_state_dict(self, state_dict):
+
+        if self.model_type == 'lfcc_lcnn':
+            
+            state_dict_old = self.models['lfcc_lcnn'].state_dict()
+
+            optional_keys = ['m_frontend.0.window', 'resampler.kernel']
+            for ok in optional_keys:
+                val = state_dict.get(ok, state_dict_old[ok])
+                state_dict[ok] = val
+
+            self.models['lfcc_lcnn'].load_state_dict(state_dict)
+        elif self.model_type == 'raw_net':
+
+            self.models['raw_net'].load_state_dict(state_dict)
+        else:
+            raise NotImplementedError()
+
+    def output_layer_requires_grad_(self, requires_grad: bool = True):
+
+        if self.model_type == 'lfcc_lcnn':
+            self.models['lfcc_lcnn'].m_output_act.requires_grad_(requires_grad)
+        else:
+            raise NotImplementedError()
+
+
 

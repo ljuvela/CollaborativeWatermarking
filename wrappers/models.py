@@ -19,10 +19,17 @@ lfcc = import_module_from_file(
     name='lfcc',
     filepath=os.path.realpath(f"{__file__}/../../third_party/asvspoof-2021/LA/Baseline-LFCC-LCNN/project/baseline_LA/model.py"))
 
+rawnet = import_module_from_file(
+    name='rawnet',
+    filepath=os.path.realpath(f"{__file__}/../../third_party/asvspoof-2021/LA/Baseline-RawNet2/model.py")
+)
 
 class LFCC_LCNN(lfcc.Model):
 
-    def __init__(self, in_dim, out_dim, sample_rate):
+    def __init__(self, in_dim, out_dim, 
+                 sample_rate,
+                 sigmoid_output=True,
+                 dropout_prob=0.7):
         """
         Args: 
             in_dim: input dimension, default 1 for single channel wav
@@ -36,13 +43,16 @@ class LFCC_LCNN(lfcc.Model):
         super().__init__(
             in_dim, out_dim,
             args=args, prj_conf=prj_conf,
-            mean_std=mean_std)
+            mean_std=mean_std,
+            dropout_prob=dropout_prob)
         
         self.sample_rate = sample_rate
         if self.sample_rate != 16000:
             self.resampler = Resample(orig_freq=self.sample_rate, new_freq=16000)
         else:
             self.resampler = None
+
+        self.sigmoid_out = sigmoid_output
 
     def forward(self, x):
         """
@@ -64,26 +74,121 @@ class LFCC_LCNN(lfcc.Model):
 
         feature_vec = self._compute_embedding(x[:, 0, :], datalength=None)
         # return feature_vec
-        scores = self._compute_score(feature_vec)
+        scores = self._compute_score(feature_vec, inference=(not self.sigmoid_out))
         scores = scores.reshape(-1, 1)
         return scores
     
 
-if __name__ == "__main__":
+class RawNet(rawnet.RawNet):
 
-    model = LFCC_LCNN(in_dim=1, out_dim=1)
-    model = model.eval()
+    def __init__(
+            self,
+            sample_rate=16000,
+            first_conv=1024,
+            in_channels=1,
+            filts=[20, [20, 20], [20, 128], [128, 128]],
+            nb_fc_node= 1024,
+            gru_node=1024,
+            nb_gru_layer=3,
+            nb_classes=2,
+            device=torch.device('cpu')):
+        """
+        Args:
+            nb_samp: ?
+            first_conv: no. of filter coefficients 
+            in_channels: ?
+            filts: no. of filters channel in residual blocks
+            nb_fc_node: ?
+            gru_node: ?
+            nb_gru_layer: ?
+            nb_classes: ?
+        
+        """
+        d_args = {
+            # 'nb_samp': nb_samp,
+            'first_conv': first_conv,
+            'in_channels': in_channels,
+            'filts': filts,
+            # 'blocks': blocks,
+            'nb_fc_node': nb_fc_node,
+            'gru_node': gru_node,
+            'nb_gru_layer': nb_gru_layer,
+            'nb_classes': nb_classes
+        }
+
+        super().__init__(d_args=d_args, device=device)
+
+        self.sample_rate = sample_rate
+        if self.sample_rate != 16000:
+            self.resampler = Resample(orig_freq=self.sample_rate, new_freq=16000)
+        else:
+            self.resampler = None
+
+
+    def forward(self, x):
+        """
+        Args:
+            x: (batch, channels=1, length)
+
+        Returns:
+            scores: (batch, length=1)
+
+        """
+
+        if x.ndim != 3: 
+            raise ValueError(f"Expected input of shape (batch, channels=1, timestesps), got {x.shape}")
+        if x.size(1) != 1:
+            raise ValueError(f"Expected single channel input, got {x.shape}")
+
+        if self.resampler is not None:
+            x = self.resampler(x)
+
+        log_out = super().forward(x[:, 0, :])
+
+        # slice from (batch, num_classes) -> (batch, 1)
+        log_out = log_out[:, 0:1]
+
+        return torch.exp(log_out)
+
+
+def test_lfcc_lcnn():
+        
+    model = LFCC_LCNN(in_dim=1, out_dim=1, sample_rate=16000)
 
     batch = 2
     timesteps = 16000
     channels = 1
-    x = 0.1 * torch.randn(batch, timesteps, requires_grad=True)
+    x = 0.1 * torch.randn(batch, 1, timesteps, requires_grad=True)
     x = torch.nn.Parameter(x)
 
     scores = model.forward(x)
-
     # check that gradients pass
     scores.sum().backward()
 
     print(f"{x.grad}")
 
+    assert x.grad is not None
+
+
+
+
+
+if __name__ == "__main__":
+
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+    batch = 3
+    timesteps = 16000
+    channels = 1
+    x = 0.1 * torch.randn(batch, 1, timesteps, requires_grad=True)
+    x = torch.nn.Parameter(x)
+    x_dev = x.to(device)
+
+    model = RawNet(sample_rate=22050)
+    model = model.to(device)
+
+    scores = model.forward(x_dev)
+    scores.pow(2).sum().backward()
+
+    print(f"{x.grad}")
+    assert x.grad is not None
