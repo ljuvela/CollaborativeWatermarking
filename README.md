@@ -11,7 +11,10 @@ conda activate adversarial-watermarking
 
 conda install -c pytorch -c conda-forge pytorch torchaudio pytest conda-build matplotlib scipy pysoundfile tensorboard
 
+conda install -c pytorch-nightly -c nvidia torchaudio
 
+
+dataset = torchaudio.prototype.datasets.Musan(root='/scratch/elec/t412-speechcom/ljuvela/DATA/MUSAN', subset='noise', download=True)
 
 ```
 
@@ -57,3 +60,21 @@ Adversarial Watermarking (AdWaMa)
         "third_party/asvspoof-2021/LA/Baseline-LFCC-LCNN"]
 }
 ```
+
+
+### Noise agumentation
+
+Musan dataset is available as direct download from
+https://www.openslr.org/17/
+
+
+Torchaudio has a nice wrapper, but only available in the nightly prototype at the moment 
+https://pytorch.org/audio/master/generated/torchaudio.prototype.datasets.Musan.html
+
+
+### Room impulse repsonse augmentation
+
+http://mcdermottlab.mit.edu/Reverb/IR_Survey.html
+
+
+
