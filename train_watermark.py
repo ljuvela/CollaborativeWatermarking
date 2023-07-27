@@ -205,7 +205,13 @@ def train(rank, a, h):
             loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
-            y_wm_real, y_wm_fake = watermark(y, y_g_hat)
+            # Watermark
+            wm_role = h.get('watermark_role', 'collaborator')
+            if wm_role == 'collaborator':
+                y_g_wm_input = y_g_hat
+            elif wm_role == 'observer':
+                y_g_wm_input = y_g_hat.detach()
+            y_wm_real, y_wm_fake = watermark(y, y_g_wm_input)
             loss_wm_total = 0.0
             wm_losses_r = []
             wm_losses_f = []
@@ -213,8 +219,8 @@ def train(rank, a, h):
                 wm_loss, wm_loss_r, wm_loss_f = discriminator_loss(
                     disc_real_outputs=y_wm_real_i, disc_generated_outputs=y_wm_fake_i)
                 loss_wm_total += wm_loss
-                wm_losses_f.append(wm_loss_r)
-                wm_losses_r.append(wm_loss_f)
+                wm_losses_r.append(wm_loss_r)
+                wm_losses_f.append(wm_loss_f)
 
             # Adversarial (S, F), Feature matching (S, F), Mel, Collaborative
             loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + loss_wm_total
@@ -277,10 +283,21 @@ def train(rank, a, h):
                     for label, losses in zip(watermark.get_labels(), wm_losses_f):
                         sw.add_scalar(f"training_watermark/{label}_fake", sum(losses), steps)
 
-                    # TODO: log minibatch EER
+                    # log minibatch EER
+                    if a.log_training_eer:
+                        watermark_metrics = [DiscriminatorMetrics() for i in range(watermark.get_num_models())]
+                        with torch.no_grad():
+                            for metrics, y_wm_real_i, y_wm_fake_i in zip(watermark_metrics, y_wm_real, y_wm_fake):
+                                metrics.accumulate(
+                                    disc_real_outputs = y_wm_real_i,
+                                    disc_fake_outputs = y_wm_fake_i
+                                )
+                        for label, metric in zip(watermark.get_labels(), watermark_metrics):
+                            sw.add_scalar(f"training_watermark/{label}_equal_error_rate", metric.eer, steps)
 
                 # Validation
-                if steps % a.validation_interval == 0:  # and steps != 0:
+                if steps % a.validation_interval == 0:
+                # if steps % a.validation_interval == 0 and steps != 0:
                     generator.eval()
                     mpd.eval()
                     msd.eval()
@@ -385,6 +402,7 @@ def main():
     parser.add_argument('--checkpoint_interval', default=5000, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--validation_interval', default=1000, type=int)
+    parser.add_argument('--log_training_eer', default=False, type=bool)
     parser.add_argument('--fine_tuning', default=False, type=bool)
     parser.add_argument('--wavefile_ext', default='.wav', type=str)
 
