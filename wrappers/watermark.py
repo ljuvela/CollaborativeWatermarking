@@ -20,7 +20,9 @@ class WatermarkModelEnsemble(torch.nn.Module):
                 in_dim=1, out_dim=1, 
                 sample_rate=sample_rate, 
                 sigmoid_output=config.get('lfcc_lcnn_sigmoid_out', True),
-                dropout_prob=config.get('lfcc_lcnn_dropout_prob', 0.7))
+                dropout_prob=config.get('lfcc_lcnn_dropout_prob', 0.7),
+                use_batch_norm=config.get('lfcc_lcnn_use_batch_norm', True)
+                )
         elif model_type == 'raw_net':
             self.models['raw_net'] = RawNet(sample_rate=sample_rate)
         elif model_type is None:
@@ -43,15 +45,14 @@ class WatermarkModelEnsemble(torch.nn.Module):
                 y_real = [model(x_real)]
                 y_fake = [model(x_fake)]
 
-
             outputs_real.append(y_real)
             outputs_fake.append(y_fake)
 
         return outputs_real, outputs_fake
-    
+
     def get_labels(self):
         return list(self.models.keys())
-    
+
     def get_num_models(self):
         return len(self.models.keys())
 

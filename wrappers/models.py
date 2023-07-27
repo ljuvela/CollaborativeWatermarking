@@ -29,7 +29,8 @@ class LFCC_LCNN(lfcc.Model):
     def __init__(self, in_dim, out_dim, 
                  sample_rate,
                  sigmoid_output=True,
-                 dropout_prob=0.7):
+                 dropout_prob=0.7,
+                 use_batch_norm=True):
         """
         Args: 
             in_dim: input dimension, default 1 for single channel wav
@@ -44,7 +45,8 @@ class LFCC_LCNN(lfcc.Model):
             in_dim, out_dim,
             args=args, prj_conf=prj_conf,
             mean_std=mean_std,
-            dropout_prob=dropout_prob)
+            dropout_prob=dropout_prob,
+            use_batch_norm=use_batch_norm)
         
         self.sample_rate = sample_rate
         if self.sample_rate != 16000:
@@ -165,15 +167,10 @@ def test_lfcc_lcnn():
     # check that gradients pass
     scores.sum().backward()
 
-    print(f"{x.grad}")
-
     assert x.grad is not None
 
 
-
-
-
-if __name__ == "__main__":
+def test_rawnet():
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -190,5 +187,33 @@ if __name__ == "__main__":
     scores = model.forward(x_dev)
     scores.pow(2).sum().backward()
 
-    print(f"{x.grad}")
     assert x.grad is not None
+
+
+def test_lfcc_lcnn_no_dropout_no_batchnorm():
+
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+    model = LFCC_LCNN(in_dim=1, out_dim=1, sample_rate=22050,
+                      dropout_prob=0.0, use_batch_norm=False)
+    model = model.to(device)
+
+    batch = 3
+    timesteps = 16000
+    channels = 1
+    x = 0.1 * torch.randn(batch, 1, timesteps, requires_grad=True)
+    x = torch.nn.Parameter(x)
+
+
+    scores = model.forward(x.to(device))
+    # check that gradients pass
+    scores.sum().backward()
+
+    assert x.grad is not None
+
+
+if __name__ == "__main__":
+
+    test_lfcc_lcnn()
+    test_rawnet()
+    test_lfcc_lcnn_no_dropout_no_batchnorm()
