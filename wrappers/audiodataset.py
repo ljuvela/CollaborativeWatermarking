@@ -27,10 +27,13 @@ def load_wav(full_path):
 
 class AudioDataset(torch.utils.data.Dataset):
 
-    def __init__(self, training_files, segment_size,
-                sampling_rate, split=True, shuffle=True, 
-                n_cache_reuse=1, resample=False,
-                device=None,):
+    def __init__(
+            self,
+            training_files, sampling_rate, 
+            segment_size=None,
+            split=True, shuffle=True, 
+            n_cache_reuse=1, resample=False,
+                device=None):
         
         self.audio_files = training_files
         random.seed(1234)

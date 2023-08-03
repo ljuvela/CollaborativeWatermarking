@@ -56,6 +56,18 @@ class WatermarkModelEnsemble(torch.nn.Module):
     def get_num_models(self):
         return len(self.models.keys())
 
+    def train_rnns(self):
+        """ Enable gradients for RNNs """
+
+        if self.model_type == 'lfcc_lcnn':
+            model = self.models['lfcc_lcnn']
+            model.m_before_pooling.train()
+        elif self.model_type == 'raw_net':
+            model = self.models['raw_net']
+            raise NotImplementedError()
+
+            pass
+
 
     def load_pretrained_state_dict(self, state_dict):
 
@@ -63,11 +75,10 @@ class WatermarkModelEnsemble(torch.nn.Module):
             
             state_dict_old = self.models['lfcc_lcnn'].state_dict()
 
-            optional_keys = ['m_frontend.0.window', 'resampler.kernel']
+            optional_keys = ['resampler.kernel']
             for ok in optional_keys:
                 val = state_dict.get(ok, state_dict_old[ok])
                 state_dict[ok] = val
-
             self.models['lfcc_lcnn'].load_state_dict(state_dict)
         elif self.model_type == 'raw_net':
 

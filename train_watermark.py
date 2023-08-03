@@ -20,11 +20,17 @@ from metrics import DiscriminatorMetrics
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
 
 from wrappers.watermark import WatermarkModelEnsemble
+from wrappers.augment import get_augmentations
+
 
 torch.backends.cudnn.benchmark = True
 
 
 def train(rank, a, h):
+
+    print(f"Arguments: {a}")
+
+    print(f"Config: {h}")
 
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
@@ -46,7 +52,7 @@ def train(rank, a, h):
         sample_rate=h.sampling_rate,
         config=h
         ).to(device)
-
+    
     if rank == 0:
         print(generator)
         os.makedirs(a.checkpoint_path, exist_ok=True)
@@ -90,8 +96,9 @@ def train(rank, a, h):
         for param in watermark.parameters():
             param.requires_grad_(False)
         # unfreeze output layer
-        # watermark.output_layer_requires_grad_(True)
-        # watermark.eval()
+        watermark.output_layer_requires_grad_(True)
+        watermark.eval()
+        watermark.train_rnns() # enable gradients for RNNs
 
     optim_g = torch.optim.AdamW(generator.parameters(), h.learning_rate, betas=[h.adam_b1, h.adam_b2])
     optim_d = torch.optim.AdamW(itertools.chain(msd.parameters(), mpd.parameters()),
@@ -128,16 +135,41 @@ def train(rank, a, h):
                               pin_memory=True,
                               drop_last=True)
 
+    augmentation_train, augmentation_valid = get_augmentations(h, a, device=device)
+
     if rank == 0:
-        validset = MelDataset(validation_filelist, h.segment_size, h.n_fft, h.num_mels,
-                              h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, False, False, n_cache_reuse=0,
-                              fmax_loss=h.fmax_for_loss, device=device, fine_tuning=a.fine_tuning,
-                              base_mels_path=a.input_mels_dir)
-        validation_loader = DataLoader(validset, num_workers=1, shuffle=False,
-                                       sampler=None,
-                                       batch_size=1,
-                                       pin_memory=True,
-                                       drop_last=True)
+        validset = MelDataset(
+            validation_filelist, 
+            segment_size=h.segment_size,
+            n_fft=h.n_fft, num_mels=h.num_mels,
+            hop_size=h.hop_size, win_size=h.win_size,
+            sampling_rate=h.sampling_rate,
+            fmin=h.fmin, fmax=h.fmax,
+            split=False, shuffle=False, 
+            n_cache_reuse=0, fmax_loss=h.fmax_for_loss,
+            device=device, fine_tuning=a.fine_tuning,
+            base_mels_path=a.input_mels_dir)
+        validation_loader = DataLoader(
+            validset, num_workers=0, shuffle=False,
+            sampler=None, batch_size=1, pin_memory=True,
+            drop_last=True)
+        
+        validset_batch = MelDataset(
+            validation_filelist, 
+            segment_size=h.segment_size,
+            n_fft=h.n_fft, num_mels=h.num_mels,
+            hop_size=h.hop_size, win_size=h.win_size,
+            sampling_rate=h.sampling_rate,
+            fmin=h.fmin, fmax=h.fmax,
+            split=True, shuffle=False,
+            n_cache_reuse=0, fmax_loss=h.fmax_for_loss,
+            device=device, fine_tuning=a.fine_tuning,
+            base_mels_path=a.input_mels_dir)
+        validation_loader_batch = DataLoader(
+            validset_batch, num_workers=h.num_workers, shuffle=False,
+            sampler=None, batch_size=h.batch_size, pin_memory=True,
+            drop_last=True)
+
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))
 
@@ -145,7 +177,11 @@ def train(rank, a, h):
     generator.train()
     mpd.train()
     msd.train()
-    watermark.train() # TODO: disable dropout when training?
+    if a.freeze_watermark_weights:
+        watermark.eval()
+        watermark.train_rnns() # enable gradients for RNNs
+    else:
+        watermark.train()
 
 
     # generator = torch.compile(generator)
@@ -169,7 +205,6 @@ def train(rank, a, h):
             y = torch.autograd.Variable(y.to(device, non_blocking=True))
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             y = y.unsqueeze(1)
-
 
             y_g_hat = generator(x)
 
@@ -206,12 +241,16 @@ def train(rank, a, h):
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
             # Watermark
+            y_r_wm_input = y
             wm_role = h.get('watermark_role', 'collaborator')
             if wm_role == 'collaborator':
                 y_g_wm_input = y_g_hat
             elif wm_role == 'observer':
                 y_g_wm_input = y_g_hat.detach()
-            y_wm_real, y_wm_fake = watermark(y, y_g_wm_input)
+            if augmentation_train is not None:
+                y_g_wm_input = augmentation_train(y_g_wm_input)
+                y_r_wm_input = augmentation_train(y)
+            y_wm_real, y_wm_fake = watermark(y_r_wm_input, y_g_wm_input)
             loss_wm_total = 0.0
             wm_losses_r = []
             wm_losses_f = []
@@ -298,6 +337,7 @@ def train(rank, a, h):
                 # Validation
                 if steps % a.validation_interval == 0:
                 # if steps % a.validation_interval == 0 and steps != 0:
+                    print(f"Validating at step {steps}")
                     generator.eval()
                     mpd.eval()
                     msd.eval()
@@ -311,6 +351,44 @@ def train(rank, a, h):
                     watermark_metrics = [DiscriminatorMetrics() for i in range(watermark.get_num_models())]
   
                     with torch.no_grad():
+
+                        for j, batch in enumerate(validation_loader_batch):
+
+                            x, y, _, y_mel = batch
+                            y_g_hat = generator(x.to(device))
+
+                            # Apply augmentation and batch validation samples
+                            y = torch.autograd.Variable(y.to(device, non_blocking=True))
+                            y = y.unsqueeze(1)
+                            if augmentation_valid is not None:
+                                y_g_wm_input = augmentation_valid(y_g_hat)
+                                y_r_wm_input = augmentation_valid(y)
+                            else:
+                                y_g_wm_input = y_g_hat
+                                y_r_wm_input = y
+
+                            # Watermark EER
+                            y_wm_real, y_wm_fake = watermark(y_r_wm_input, y_g_wm_input)
+                            for metrics, y_wm_real_i, y_wm_fake_i in zip(watermark_metrics, y_wm_real, y_wm_fake):
+                                metrics.accumulate(
+                                    disc_real_outputs = y_wm_real_i,
+                                    disc_fake_outputs = y_wm_fake_i
+                                )
+
+                            if a.log_discriminator_validation_eer:
+                                # Calculate discriminator EER
+                                y_df_hat_r, y_df_hat_g, _, _ = mpd(y, y_g_hat)
+                                mpd_adversary_metrics.accumulate(
+                                    disc_real_outputs = y_df_hat_r,
+                                    disc_fake_outputs = y_df_hat_g
+                                )
+
+                                y_ds_hat_r, y_ds_hat_g, _, _ = msd(y, y_g_hat)
+                                msd_adversary_metrics.accumulate(
+                                    disc_real_outputs = y_ds_hat_r,
+                                    disc_fake_outputs = y_ds_hat_g
+                                )
+
                         for j, batch in enumerate(validation_loader):
                             x, y, _, y_mel = batch
                             y_g_hat = generator(x.to(device))
@@ -320,31 +398,6 @@ def train(rank, a, h):
                                                           h.hop_size, h.win_size,
                                                           h.fmin, h.fmax_for_loss)
                             val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
-
-
-                            # calculate discriminator EER
-                            y = torch.autograd.Variable(y.to(device, non_blocking=True))
-                            y = y.unsqueeze(1)
-
-                            y_wm_real, y_wm_fake = watermark(y, y_g_hat)
-                            for metrics, y_wm_real_i, y_wm_fake_i in zip(watermark_metrics, y_wm_real, y_wm_fake):
-                                metrics.accumulate(
-                                    disc_real_outputs = y_wm_real_i,
-                                    disc_fake_outputs = y_wm_fake_i
-                                )
-
-
-                            y_df_hat_r, y_df_hat_g, _, _ = mpd(y, y_g_hat)
-                            mpd_adversary_metrics.accumulate(
-                                disc_real_outputs = y_df_hat_r,
-                                disc_fake_outputs = y_df_hat_g
-                            )
-
-                            y_ds_hat_r, y_ds_hat_g, _, _ = msd(y, y_g_hat)
-                            msd_adversary_metrics.accumulate(
-                                disc_real_outputs = y_ds_hat_r,
-                                disc_fake_outputs = y_ds_hat_g
-                            )
 
                             if j <= 4:
                                 if steps == 0:
@@ -358,20 +411,24 @@ def train(rank, a, h):
                                 sw.add_figure('generated/y_hat_spec_{}'.format(j),
                                               plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
 
-
                         val_err = val_err_tot / (j+1)
                         sw.add_scalar("validation/mel_spec_error", val_err, steps)
 
                         for label, metric in zip(watermark.get_labels(), watermark_metrics):
                             sw.add_scalar(f"validation/watermark_{label}_equal_error_rate", metric.eer, steps)
 
-                        sw.add_scalar("validation/mpd_adversary_equal_error_rate", mpd_adversary_metrics.eer, steps)
-                        sw.add_scalar("validation/msd_adversary_equal_error_rate", msd_adversary_metrics.eer, steps)
+                        if a.log_discriminator_validation_eer:
+                            sw.add_scalar("validation/mpd_adversary_equal_error_rate", mpd_adversary_metrics.eer, steps)
+                            sw.add_scalar("validation/msd_adversary_equal_error_rate", msd_adversary_metrics.eer, steps)
 
                     generator.train()
                     mpd.train()
                     msd.train()
-                    watermark.train()
+                    if a.freeze_watermark_weights:
+                        watermark.eval()
+                        watermark.train_rnns() # enable gradients for RNNs
+                    else:
+                        watermark.train()
 
             steps += 1
 
@@ -403,8 +460,17 @@ def main():
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--validation_interval', default=1000, type=int)
     parser.add_argument('--log_training_eer', default=False, type=bool)
+    parser.add_argument('--log_discriminator_validation_eer', default=False)
     parser.add_argument('--fine_tuning', default=False, type=bool)
     parser.add_argument('--wavefile_ext', default='.wav', type=str)
+    parser.add_argument('--use_augmentation', default=False, type=bool)
+    parser.add_argument('--noise_input_training_file', default='experiments/filelists/musan/train_list.txt')
+    parser.add_argument('--noise_input_validation_file', default='experiments/filelists/musan/valid_list.txt')
+    parser.add_argument('--noise_input_wavs_dir', default='../../DATA/musan/noise/free-sound')
+    parser.add_argument('--reverb_input_training_file', default='experiments/filelists/mit-rir/train_list.txt')
+    parser.add_argument('--reverb_input_validation_file', default='experiments/filelists/mit-rir/valid_list.txt')
+    parser.add_argument('--reverb_input_wavs_dir', default='../../DATA/MIT-RIR/Audio')
+
 
     a = parser.parse_args()
 

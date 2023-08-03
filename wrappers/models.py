@@ -56,6 +56,24 @@ class LFCC_LCNN(lfcc.Model):
 
         self.sigmoid_out = sigmoid_output
 
+
+    def eval(self, pass_gradients=True):
+        """
+        Set model to eval mode
+
+        cuDNN RNNs are not passing gradients in eval mode 
+        and these need to be exempted if gradient flow is needed
+        """
+        if not pass_gradients:
+            self.eval()
+        else:
+            for name, module in self.named_children():
+                print(name)
+                if name != 'gru':
+                    module.eval()
+            self.training = False
+            
+
     def forward(self, x):
         """
         Args:
@@ -125,6 +143,24 @@ class RawNet(rawnet.RawNet):
             self.resampler = Resample(orig_freq=self.sample_rate, new_freq=16000)
         else:
             self.resampler = None
+
+
+    def eval(self, pass_gradients=True):
+        """
+        Set model to eval mode
+
+        cuDNN RNNs are not passing gradients in eval mode 
+        and these need to be exempted if gradient flow is needed
+        """
+        if not pass_gradients:
+            self.eval()
+        else:
+            for name, module in self.named_children():
+                print(name)
+                if name != 'gru':
+                    module.eval()
+            self.training = False
+            
 
 
     def forward(self, x):
@@ -211,9 +247,32 @@ def test_lfcc_lcnn_no_dropout_no_batchnorm():
 
     assert x.grad is not None
 
+def test_rawnet_eval_grad():
+
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+    batch = 3
+    timesteps = 16000
+    channels = 1
+    x = 0.1 * torch.randn(batch, 1, timesteps, requires_grad=True)
+    x = torch.nn.Parameter(x)
+    x_dev = x.to(device)
+
+    model = RawNet(sample_rate=22050)
+    model = model.to(device)
+    # model.eval(pass_gradients=True)
+
+    scores = model.forward(x_dev)
+    scores.pow(2).sum().backward()
+
+    assert x.grad is not None
+
 
 if __name__ == "__main__":
 
+    test_rawnet_eval_grad()
     test_lfcc_lcnn()
     test_rawnet()
     test_lfcc_lcnn_no_dropout_no_batchnorm()
+
+
