@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import torchaudio
-from audiodataset import AudioDataset, get_dataset_filelist
+from .audiodataset import AudioDataset, get_dataset_filelist
 
 def get_augmentations(h, a, device):
 

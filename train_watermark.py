@@ -173,7 +173,6 @@ def train(rank, a, h):
 
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))
 
-
     generator.train()
     mpd.train()
     msd.train()

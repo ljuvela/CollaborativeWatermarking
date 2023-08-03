@@ -111,7 +111,9 @@ class RawNet(rawnet.RawNet):
             gru_node=1024,
             nb_gru_layer=3,
             nb_classes=2,
-            device=torch.device('cpu')):
+            device=torch.device('cpu'),
+            use_batch_norm=True
+            ):
         """
         Args:
             nb_samp: ?
@@ -136,7 +138,9 @@ class RawNet(rawnet.RawNet):
             'nb_classes': nb_classes
         }
 
-        super().__init__(d_args=d_args, device=device)
+
+        super().__init__(d_args=d_args, device=device, 
+                         use_batch_norm=use_batch_norm)
 
         self.sample_rate = sample_rate
         if self.sample_rate != 16000:
@@ -211,17 +215,40 @@ def test_rawnet():
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
     batch = 3
-    timesteps = 16000
+    timesteps = 22050
     channels = 1
     x = 0.1 * torch.randn(batch, 1, timesteps, requires_grad=True)
     x = torch.nn.Parameter(x)
     x_dev = x.to(device)
 
-    model = RawNet(sample_rate=22050)
+    model = RawNet(sample_rate=16000)
     model = model.to(device)
 
     scores = model.forward(x_dev)
     scores.pow(2).sum().backward()
+
+    assert x.grad is not None
+
+
+def test_rawnet_no_batch_norm():
+
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+    batch = 3
+    timesteps = 22050
+    channels = 1
+    x = 0.1 * torch.randn(batch, 1, timesteps, requires_grad=True)
+    x = torch.nn.Parameter(x)
+    x_dev = x.to(device)
+
+    model = RawNet(sample_rate=16000, use_batch_norm=False)
+    model = model.to(device)
+
+    scores = model.forward(x_dev)
+    scores.pow(2).sum().backward()
+
+    # for name, param in model.named_parameters():
+    #     print(name)
 
     assert x.grad is not None
 
@@ -247,32 +274,17 @@ def test_lfcc_lcnn_no_dropout_no_batchnorm():
 
     assert x.grad is not None
 
-def test_rawnet_eval_grad():
 
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
-    batch = 3
-    timesteps = 16000
-    channels = 1
-    x = 0.1 * torch.randn(batch, 1, timesteps, requires_grad=True)
-    x = torch.nn.Parameter(x)
-    x_dev = x.to(device)
-
-    model = RawNet(sample_rate=22050)
-    model = model.to(device)
-    # model.eval(pass_gradients=True)
-
-    scores = model.forward(x_dev)
-    scores.pow(2).sum().backward()
-
-    assert x.grad is not None
 
 
 if __name__ == "__main__":
 
-    test_rawnet_eval_grad()
+    test_rawnet_no_batch_norm()
     test_lfcc_lcnn()
     test_rawnet()
     test_lfcc_lcnn_no_dropout_no_batchnorm()
+
+
+
 
 
