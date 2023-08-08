@@ -89,14 +89,14 @@ def train(rank, a, h):
         watermark = DistributedDataParallel(watermark, device_ids=[rank]).to(device)
 
     if a.pretrained_watermark_path is not None:
-        state_dict = torch.load(a.pretrained_watermark_path)
+        state_dict = torch.load(a.pretrained_watermark_path, map_location='cpu')
         watermark.load_pretrained_state_dict(state_dict)
 
     if a.freeze_watermark_weights:
         for param in watermark.parameters():
             param.requires_grad_(False)
-        # unfreeze output layer
-        watermark.output_layer_requires_grad_(True)
+        if h.get('watermark_unfreeze_output_layer', True):
+            watermark.output_layer_requires_grad_(True)
         watermark.eval()
         watermark.train_rnns() # enable gradients for RNNs
 

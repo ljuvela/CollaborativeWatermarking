@@ -112,11 +112,11 @@ class RawNet(rawnet.RawNet):
             nb_gru_layer=3,
             nb_classes=2,
             device=torch.device('cpu'),
-            use_batch_norm=True
+            use_batch_norm=True,
+            pad_input_to_len: int = None
             ):
         """
         Args:
-            nb_samp: ?
             first_conv: no. of filter coefficients 
             in_channels: ?
             filts: no. of filters channel in residual blocks
@@ -124,14 +124,13 @@ class RawNet(rawnet.RawNet):
             gru_node: ?
             nb_gru_layer: ?
             nb_classes: ?
+            pad_input_to_len: pad input to specific length (default: None, uses input as is)
         
         """
         d_args = {
-            # 'nb_samp': nb_samp,
             'first_conv': first_conv,
             'in_channels': in_channels,
             'filts': filts,
-            # 'blocks': blocks,
             'nb_fc_node': nb_fc_node,
             'gru_node': gru_node,
             'nb_gru_layer': nb_gru_layer,
@@ -147,6 +146,8 @@ class RawNet(rawnet.RawNet):
             self.resampler = Resample(orig_freq=self.sample_rate, new_freq=16000)
         else:
             self.resampler = None
+
+        self.pad_input_to_len = pad_input_to_len
 
 
     def eval(self, pass_gradients=True):
@@ -184,6 +185,10 @@ class RawNet(rawnet.RawNet):
 
         if self.resampler is not None:
             x = self.resampler(x)
+
+        if self.pad_input_to_len is not None:
+            # left padding
+            x = torch.nn.functional.pad(x, pad=(self.pad_input_to_len - x.size(-1), 0), mode='constant', value=0.0)
 
         log_out = super().forward(x[:, 0, :])
 
@@ -244,6 +249,8 @@ def test_rawnet_no_batch_norm():
     model = RawNet(sample_rate=16000, use_batch_norm=False)
     model = model.to(device)
 
+    assert not any(['running_mean' in k for k in  model.state_dict().keys()])
+
     scores = model.forward(x_dev)
     scores.pow(2).sum().backward()
 
@@ -261,12 +268,13 @@ def test_lfcc_lcnn_no_dropout_no_batchnorm():
                       dropout_prob=0.0, use_batch_norm=False)
     model = model.to(device)
 
+    assert not any(['running_mean' in k for k in  model.state_dict().keys()])
+
     batch = 3
     timesteps = 16000
     channels = 1
     x = 0.1 * torch.randn(batch, 1, timesteps, requires_grad=True)
     x = torch.nn.Parameter(x)
-
 
     scores = model.forward(x.to(device))
     # check that gradients pass
@@ -275,10 +283,31 @@ def test_lfcc_lcnn_no_dropout_no_batchnorm():
     assert x.grad is not None
 
 
+def test_rawnet_padding():
+
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+    batch = 3
+    sample_rate = 22050
+    timesteps = 22050
+    channels = 1
+    x = 0.1 * torch.randn(batch, 1, timesteps, requires_grad=True)
+    x = torch.nn.Parameter(x)
+    x_dev = x.to(device)
+
+    model = RawNet(sample_rate=sample_rate, use_batch_norm=False, pad_input_to_len=64600)
+    model = model.to(device)
+
+    scores = model.forward(x_dev)
+    scores.pow(2).sum().backward()
+
+    assert x.grad is not None
+
 
 
 if __name__ == "__main__":
 
+    test_rawnet_padding()
     test_rawnet_no_batch_norm()
     test_lfcc_lcnn()
     test_rawnet()

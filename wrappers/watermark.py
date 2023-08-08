@@ -24,7 +24,11 @@ class WatermarkModelEnsemble(torch.nn.Module):
                 use_batch_norm=config.get('lfcc_lcnn_use_batch_norm', True)
                 )
         elif model_type == 'raw_net':
-            self.models['raw_net'] = RawNet(sample_rate=sample_rate)
+            self.models['raw_net'] = RawNet(
+                sample_rate=sample_rate,
+                use_batch_norm=config.get('raw_net_use_batch_norm', True),
+                pad_input_to_len=config.get('raw_net_input_pad_len', None)
+            )
         elif model_type is None:
             pass
         else:
