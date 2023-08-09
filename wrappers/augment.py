@@ -46,7 +46,7 @@ def get_augmentations(h, a, device):
                 ext=''
                 )
             reverb_dataset_train = AudioDataset(
-                training_files=reverb_filelist_train, 
+                training_files=reverb_filelist_valid,
                 sampling_rate=h.sampling_rate,
                 split=False,
                 resample=True,
