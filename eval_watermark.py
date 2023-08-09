@@ -222,8 +222,6 @@ def eval(a, h):
             for cond in conditions:
                 cond.accumulate(input_real=y, input_fake=y_g_hat, model=watermark)
 
-            break
-
         watermark_role = h['watermark_role']
         train_aug_types = h.get('augmentation_types', None)
         if train_aug_types is None:
