@@ -16,12 +16,12 @@ from env import AttrDict, build_env
 from meldataset import MelDataset, mel_spectrogram
 from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
-from metrics import DiscriminatorMetrics
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
 
-from wrappers.watermark import WatermarkModelEnsemble
-from wrappers.augment import NoiseAugment, RandomTimeStretch, ReverbAugment
-from wrappers.audiodataset import AudioDataset
+from modules.watermark import WatermarkModelEnsemble
+from modules.augment import NoiseAugment, RandomTimeStretch, ReverbAugment
+from modules.audiodataset import AudioDataset
+from modules.metrics import WatermarkMetric
 
 import soundfile as sf
 
@@ -40,12 +40,11 @@ def get_dataset_filelist(filelist:str, wavs_dir: str, ext='.wav'):
     return files
 
 
-def eval(a, h):
+def eval(args, h):
 
-    print(f"Arguments: {a}")
+    print(f"Arguments: {args}")
 
     print(f"Config: {h}")
-
 
     torch.cuda.manual_seed(h.seed)
     if torch.cuda.is_available():
@@ -63,15 +62,14 @@ def eval(a, h):
         sample_rate=h.sampling_rate,
         config=h
         ).to(device)
-    
-    
-    print(generator)
-    print("checkpoints directory : ", a.checkpoint_path)
 
-    if os.path.isdir(a.checkpoint_path):
-        cp_g = scan_checkpoint(a.checkpoint_path, 'g_')
-        cp_do = scan_checkpoint(a.checkpoint_path, 'do_')
-        cp_wm = scan_checkpoint(a.checkpoint_path, 'wm_')
+    print(generator)
+    print("checkpoints directory : ", args.checkpoint_path)
+
+    if os.path.isdir(args.checkpoint_path):
+        cp_g = scan_checkpoint(args.checkpoint_path, 'g_')
+        cp_do = scan_checkpoint(args.checkpoint_path, 'do_')
+        cp_wm = scan_checkpoint(args.checkpoint_path, 'wm_')
 
     steps = 0
     if cp_g is None or cp_do is None:
@@ -93,15 +91,15 @@ def eval(a, h):
         watermark.load_state_dict(state_dict_wm['watermark'])
 
     eval_filelist = get_dataset_filelist(
-        filelist=a.test_filelist,
-        wavs_dir=a.wavs_dir,
-        ext=a.wavefile_ext
+        filelist=args.test_filelist,
+        wavs_dir=args.wavs_dir,
+        ext=args.wavefile_ext
         )
 
     noise_filelist = get_dataset_filelist(
-        filelist=a.noise_input_eval_file,
-        wavs_dir=a.noise_input_wavs_dir,
-        ext=a.wavefile_ext)
+        filelist=args.noise_input_eval_file,
+        wavs_dir=args.noise_input_wavs_dir,
+        ext=args.wavefile_ext)
     aug_noise = NoiseAugment(
         AudioDataset(
             split=True,
@@ -113,9 +111,9 @@ def eval(a, h):
         snr=10, num_workers=0).to(device)
     
     reverb_filelist = get_dataset_filelist(
-        filelist=a.noise_input_eval_file,
-        wavs_dir=a.noise_input_wavs_dir,
-        ext=a.wavefile_ext)
+        filelist=args.noise_input_eval_file,
+        wavs_dir=args.noise_input_wavs_dir,
+        ext=args.wavefile_ext)
     aug_reverb = ReverbAugment(
         AudioDataset(
             training_files=reverb_filelist, 
@@ -167,90 +165,65 @@ def eval(a, h):
     val_err_tot = 0
 
 
-    class Condition():
+    df_list = []
+    for i in range(args.num_bootstrap_reps):
+        print(f"Bootstrapping repetition ({i+1}/{args.num_bootstrap_reps})")
 
-        def __init__(self, tag:str,
-                    model: torch.nn.Module, 
-                    augmentation: torch.nn.Module):
-            self.tag = tag
-            self.augmentation = augmentation
-            self.model = model
-            self.metrics = [DiscriminatorMetrics() for i in range(watermark.get_num_models())]
+        conditions = [
+            WatermarkMetric('clean', model=watermark, augmentation=torch.nn.Identity()),
+            WatermarkMetric('noise', model=watermark, augmentation=aug_noise),
+            WatermarkMetric('stretch', model=watermark, augmentation=aug_stretch),
+            WatermarkMetric('reverb', model=watermark, augmentation=aug_reverb),
+            WatermarkMetric('stretch + noise + reverb', model=watermark, 
+                augmentation=torch.nn.Sequential(aug_stretch, aug_noise, aug_reverb))
+        ]
 
-        def accumulate(self, input_real, input_fake, model):
+        with torch.no_grad():
 
-            real_aug = self.augmentation(input_real)
-            fake_aug = self.augmentation(input_fake)
+            for j, batch in enumerate(test_loader_batch):
 
-            score_real, score_fake = self.model(real_aug, fake_aug)
+                print(f"Calculating metrics for batch ({j+1}/{len(test_loader_batch)})")
+                x, y, _, y_mel = batch
+                y_g_hat = generator(x.to(device))
 
-            for metrics, y_wm_real_i, y_wm_fake_i in zip(self.metrics, score_real, score_fake):
-                metrics.accumulate(
-                    disc_real_outputs = y_wm_real_i,
-                    disc_fake_outputs = y_wm_fake_i
-                )
+                # Apply augmentation and batch validation samples
+                y = torch.autograd.Variable(y.to(device, non_blocking=True))
+                y = y.unsqueeze(1)
 
-        def get_eer(self):
-            out_val = []
-            model_labels = self.model.get_labels()
-            for model_label, metric in zip(model_labels, self.metrics):
-                out_val.append((model_label, self.tag, metric.eer))
-            return out_val
+                for cond in conditions:
+                    cond.accumulate(input_real=y, input_fake=y_g_hat)
 
-
-    conditions = [
-        Condition('clean', model=watermark, augmentation=torch.nn.Identity()),
-        Condition('noise', model=watermark, augmentation=aug_noise),
-        Condition('stretch', model=watermark, augmentation=aug_stretch),
-        Condition('reverb', model=watermark, augmentation=aug_reverb),
-        Condition('stretch + noise + reverb', model=watermark, 
-            augmentation=torch.nn.Sequential(aug_stretch, aug_noise, aug_reverb))
-    ]
-
-    with torch.no_grad():
-
-        for j, batch in enumerate(test_loader_batch):
-
-            print(f"Calculating metrics for batch ({j+1}/{len(test_loader_batch)})")
-            x, y, _, y_mel = batch
-            y_g_hat = generator(x.to(device))
-
-            # Apply augmentation and batch validation samples
-            y = torch.autograd.Variable(y.to(device, non_blocking=True))
-            y = y.unsqueeze(1)
+            watermark_role = h['watermark_role']
+            train_aug_types = h.get('augmentation_types', None)
+            if train_aug_types is None:
+                augmentation = 'none'
+            else:
+                augmentation = ' + '.join(train_aug_types)
+            pretrained = 'true' if args.watermark_was_pretrained else 'false'
 
             for cond in conditions:
-                cond.accumulate(input_real=y, input_fake=y_g_hat, model=watermark)
+                for subcond in cond.get_eer():
+                    model_tag, cond_tag, eer = subcond
+                    df_list.append(pd.DataFrame(
+                        {
+                        'model': model_tag,
+                        'condition': cond_tag,
+                        'eer': eer,
+                        'role': watermark_role,
+                        'augmentation': augmentation,
+                        'pretrained': pretrained
+                        }, index=[0]
+                    ))
 
-        watermark_role = h['watermark_role']
-        train_aug_types = h.get('augmentation_types', None)
-        if train_aug_types is None:
-            augmentation = 'none'
-        else:
-            augmentation = ' + '.join(train_aug_types)
-        pretrained = 'true' if a.watermark_was_pretrained else 'false'
 
-        df_list = []
-        for cond in conditions:
-            for subcond in cond.get_eer():
-                model_tag, cond_tag, eer = subcond
-                df_list.append(pd.DataFrame(
-                    {
-                    'model': model_tag,
-                    'condition': cond_tag,
-                    'eer': eer,
-                    'role': watermark_role,
-                    'augmentation': augmentation,
-                    'pretrained': pretrained
-                    }, index=[0]
-                ))
+    # Save metrics dataframe 
+    df = pd.concat(df_list, ignore_index=True)
+    df.to_csv(os.path.join(args.output_dir, 'results.csv'))
 
-        # Save metrics dataframe 
-        df = pd.concat(df_list, ignore_index=True)
-        df.to_csv(os.path.join(a.output_dir, 'results.csv'))
-        
-        os.makedirs(f"{a.output_dir}/audio", exist_ok=True)
-        # Render waveforms for listening
+    print("Rendering waveforms")
+    os.makedirs(f"{args.output_dir}/audio", exist_ok=True)
+    with torch.no_grad():
+
         for j, batch in enumerate(test_loader):
 
 
@@ -260,13 +233,13 @@ def eval(a, h):
             #                                 h.fmin, h.fmax_for_loss)
             # val_err_tot += F.l1_loss(y_mel, y_g_hat_mel).item()
 
-            if j <= a.max_wav_files_out:
+            if j <= args.max_wav_files_out:
 
                 x, y, filename, y_mel = batch
                 y_g_hat = generator(x.to(device))
                 y_g_np = y_g_hat.detach().cpu().squeeze().numpy()
                 bname = os.path.splitext(os.path.basename(filename[0]))[0]
-                sf.write(f"{a.output_dir}/audio/{bname}.wav", y_g_np, h.sampling_rate)
+                sf.write(f"{args.output_dir}/audio/{bname}.wav", y_g_np, h.sampling_rate)
 
 
         # val_err = val_err_tot / (j+1)
@@ -289,10 +262,12 @@ def main():
     parser.add_argument('--watermark_was_pretrained', default=False, type=bool)
     parser.add_argument('--output_dir')
     parser.add_argument('--max_wav_files_out', default=10, type=int)
+    parser.add_argument('--num_bootstrap_reps', default=50, type=int, 
+                        help="Number of epochs to iterate over test set. There is randomness in the metrics due to dataloading and augmentation")
 
-    a = parser.parse_args()
+    args = parser.parse_args()
 
-    with open(a.config) as f:
+    with open(args.config) as f:
         data = f.read()
 
     json_config = json.loads(data)
@@ -307,7 +282,7 @@ def main():
     else:
         pass
 
-    eval(a, h)
+    eval(args, h)
 
 
 if __name__ == '__main__':
