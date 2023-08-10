@@ -16,11 +16,11 @@ from env import AttrDict, build_env
 from meldataset import MelDataset, mel_spectrogram, get_dataset_filelist
 from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
-from metrics import DiscriminatorMetrics
+from modules.metrics import DiscriminatorMetrics
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
 
-from wrappers.watermark import WatermarkModelEnsemble
-from wrappers.augment import get_augmentations
+from modules.watermark import WatermarkModelEnsemble
+from modules.augment import get_augmentations
 
 
 torch.backends.cudnn.benchmark = True
