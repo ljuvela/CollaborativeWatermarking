@@ -215,10 +215,9 @@ def eval(args, h):
                         }, index=[0]
                     ))
 
-
-    # Save metrics dataframe 
-    df = pd.concat(df_list, ignore_index=True)
-    df.to_csv(os.path.join(args.output_dir, 'results.csv'))
+        # Save metrics dataframe 
+        df = pd.concat(df_list, ignore_index=True)
+        df.to_csv(os.path.join(args.output_dir, 'results.csv'))
 
     print("Rendering waveforms")
     os.makedirs(f"{args.output_dir}/audio", exist_ok=True)
@@ -261,8 +260,8 @@ def main():
     parser.add_argument('--reverb_input_wavs_dir', default='../../DATA/MIT-RIR/Audio')
     parser.add_argument('--watermark_was_pretrained', default=False, type=bool)
     parser.add_argument('--output_dir')
-    parser.add_argument('--max_wav_files_out', default=10, type=int)
-    parser.add_argument('--num_bootstrap_reps', default=50, type=int, 
+    parser.add_argument('--max_wav_files_out', default=0, type=int)
+    parser.add_argument('--num_bootstrap_reps', default=20, type=int, 
                         help="Number of epochs to iterate over test set. There is randomness in the metrics due to dataloading and augmentation")
 
     args = parser.parse_args()
