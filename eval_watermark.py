@@ -124,7 +124,6 @@ def eval(args, h):
         num_workers=0).to(device)
 
     aug_stretch = RandomTimeStretch(min_scale_factor=0.9, max_scale_factor=1.1).to(device)
-    
 
     testset = MelDataset(
         eval_filelist, 
@@ -174,6 +173,8 @@ def eval(args, h):
             WatermarkMetric('noise', model=watermark, augmentation=aug_noise),
             WatermarkMetric('stretch', model=watermark, augmentation=aug_stretch),
             WatermarkMetric('reverb', model=watermark, augmentation=aug_reverb),
+            WatermarkMetric('stretch + noise', model=watermark, 
+                augmentation=torch.nn.Sequential(aug_stretch, aug_noise, aug_reverb)),
             WatermarkMetric('stretch + noise + reverb', model=watermark, 
                 augmentation=torch.nn.Sequential(aug_stretch, aug_noise, aug_reverb))
         ]
