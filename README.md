@@ -1,6 +1,6 @@
-# Collaborative Watermarking for Adversarial Speech Synthesis
+# Collaborative Watermarking
 
-This repository contains source code for "Collaborative Watermarking for Adversarial Speech Synthesis", submitted to ICASSP 2024.
+This repository contains source code for "Collaborative Watermarking for Adversarial Speech Synthesis" submitted to ICASSP 2024.
 
 Listen to audio samples at the demo page https://ljuvela.github.io/CollaborativeWatermarkingDemo/
 
