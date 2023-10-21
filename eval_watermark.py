@@ -111,8 +111,8 @@ def eval(args, h):
         snr=10, num_workers=0).to(device)
     
     reverb_filelist = get_dataset_filelist(
-        filelist=args.noise_input_eval_file,
-        wavs_dir=args.noise_input_wavs_dir,
+        filelist=args.reverb_input_eval_file,
+        wavs_dir=args.reverb_input_wavs_dir,
         ext=args.wavefile_ext)
     aug_reverb = ReverbAugment(
         AudioDataset(
