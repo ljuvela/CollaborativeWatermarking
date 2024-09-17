@@ -1,9 +1,12 @@
 # Collaborative Watermarking
 
-This repository contains source code for "Collaborative Watermarking for Adversarial Speech Synthesis" submitted to ICASSP 2024.
+This repository contains source code for "Collaborative Watermarking for Adversarial Speech Synthesis" presented at ICASSP 2024.
 
 Listen to audio samples at the demo page https://ljuvela.github.io/CollaborativeWatermarkingDemo/
 
+Paper pre-print available at https://arxiv.org/abs/2309.15224
+
+Published version available at https://ieeexplore.ieee.org/document/10448134
 
 ## Environment setup
 
@@ -69,6 +72,20 @@ The following config snippet helps VSCode find the dependencies for development
 }
 ```
 
+## Citing
 
+
+Please use the following BibTeX to cite the paper. 
+```
+@INPROCEEDINGS{juvela2024-collaborative-watermarking,
+  author={Juvela, Lauri and Wang, Xin},
+  booktitle={ICASSP 2024 - 2024 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)}, 
+  title={Collaborative Watermarking for Adversarial Speech Synthesis}, 
+  year={2024},
+  volume={},
+  number={},
+  pages={11231-11235},
+  doi={10.1109/ICASSP48485.2024.10448134}}
+```
 
 
